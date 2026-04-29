@@ -1,0 +1,71 @@
+{
+  "feature_cols": [
+    "animal_dog",
+    "animal_cat",
+    "animal_rabbit",
+    "age",
+    "weight",
+    "body_temperature",
+    "heart_rate",
+    "fever",
+    "lethargy",
+    "appetite_loss",
+    "sneezing",
+    "nasal_discharge",
+    "lameness",
+    "swallowing",
+    "vomiting",
+    "diarrhea",
+    "coughing",
+    "labored_breathing",
+    "skin_lesions",
+    "eye_discharge",
+    "dehydration",
+    "loss_of_appetite",
+    "reduced_appetite",
+    "swelling",
+    "swollen_joints",
+    "swollen_legs",
+    "weight_loss"
+  ],
+  "pet_one_hot": [
+    "animal_dog",
+    "animal_cat",
+    "animal_rabbit"
+  ],
+  "numeric_cols": [
+    "age",
+    "weight",
+    "body_temperature",
+    "heart_rate"
+  ],
+  "symptom_cols": [
+    "fever",
+    "lethargy",
+    "appetite_loss",
+    "sneezing",
+    "nasal_discharge",
+    "lameness",
+    "swallowing",
+    "vomiting",
+    "diarrhea",
+    "coughing",
+    "labored_breathing",
+    "skin_lesions",
+    "eye_discharge",
+    "dehydration",
+    "loss_of_appetite",
+    "reduced_appetite",
+    "swelling",
+    "swollen_joints",
+    "swollen_legs",
+    "weight_loss"
+  ],
+  "num_features": 27,
+  "num_classes": 32,
+  "img_size": [
+    224,
+    224
+  ],
+  "img_normalize": "divide by 255 then (x-0.5)/0.5"
+}
