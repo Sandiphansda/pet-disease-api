@@ -1,66 +1,107 @@
 import numpy as np
 import tensorflow as tf
-import cv2, json
+import cv2, json, sys
 from pathlib import Path
 
-# ── Load once at startup ──────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
+#  Load assets once at startup
+# ─────────────────────────────────────────────────────────────────
 BASE = Path(__file__).parent.parent / "models"
 
-with open(BASE / "labels.json")  as f: LABELS  = json.load(f)
-with open(BASE / "scaler.json")  as f: SCALER  = json.load(f)
+print(f"[inference] Python  : {sys.version}", flush=True)
+print(f"[inference] TF      : {tf.__version__}", flush=True)
+print(f"[inference] Model   : {BASE / 'pet_disease_v4.tflite'}", flush=True)
+
+with open(BASE / "labels.json") as f:
+    LABELS = json.load(f)
+
+with open(BASE / "scaler.json") as f:
+    SCALER = json.load(f)
 
 MEAN  = np.array(SCALER["mean"],  dtype=np.float32)
 SCALE = np.array(SCALER["scale"], dtype=np.float32)
+print(f"[inference] Scaler mean={MEAN.tolist()}  scale={SCALE.tolist()}", flush=True)
+print(f"[inference] Labels ({len(LABELS)}): {list(LABELS.values())}", flush=True)
 
-INTERP = tf.lite.Interpreter(
-    model_path=str(BASE / "pet_disease_v4.tflite")
-)
+# ─────────────────────────────────────────────────────────────────
+#  Load TFLite model
+# ─────────────────────────────────────────────────────────────────
+INTERP = tf.lite.Interpreter(model_path=str(BASE / "pet_disease_v4.tflite"))
 INTERP.allocate_tensors()
+
 IN_DET  = INTERP.get_input_details()
 OUT_DET = INTERP.get_output_details()
 
-# ── Debug: print tensor names so you know the real names ──────
-print("=== TFLite Input Tensors ===")
-for i, d in enumerate(IN_DET):
-    print(f"  [{i}] name={d['name']}  shape={d['shape']}  dtype={d['dtype']}")
-print("=== TFLite Output Tensors ===")
-for i, d in enumerate(OUT_DET):
-    print(f"  [{i}] name={d['name']}  shape={d['shape']}  dtype={d['dtype']}")
+# ── Print full tensor details ─────────────────────────────────────
+print("\n[inference] === INPUT TENSORS ===", flush=True)
+for d in IN_DET:
+    print(f"  index={d['index']}  name={d['name']}  shape={d['shape']}  dtype={d['dtype']}", flush=True)
+print("[inference] === OUTPUT TENSORS ===", flush=True)
+for d in OUT_DET:
+    print(f"  index={d['index']}  name={d['name']}  shape={d['shape']}  dtype={d['dtype']}", flush=True)
+
+# ─────────────────────────────────────────────────────────────────
+#  Resolve image vs tabular input index by SHAPE, not name
+#  image   → 4-dim (1, 224, 224, 3)
+#  tabular → 2-dim (1, 27)
+# ─────────────────────────────────────────────────────────────────
+_img_idx = None
+_tab_idx = None
+
+for d in IN_DET:
+    if len(d["shape"]) == 4:
+        _img_idx = d["index"]
+    elif len(d["shape"]) == 2:
+        _tab_idx = d["index"]
+
+# Hard positional fallback
+if _img_idx is None:
+    _img_idx = IN_DET[0]["index"]
+if _tab_idx is None and len(IN_DET) > 1:
+    _tab_idx = IN_DET[1]["index"]
+
+print(f"[inference] Image  tensor index : {_img_idx}", flush=True)
+print(f"[inference] Tabular tensor index: {_tab_idx}", flush=True)
+
+# ─────────────────────────────────────────────────────────────────
+#  Disease class index lists per pet
+# ─────────────────────────────────────────────────────────────────
+DOG_IDX    = [int(i) for i, n in LABELS.items() if "Dog"    in n]
+CAT_IDX    = [int(i) for i, n in LABELS.items() if "Cat"    in n or "Feline" in n]
+RABBIT_IDX = [int(i) for i, n in LABELS.items() if "Rabbit" in n]
+print(f"[inference] Dog idx   : {DOG_IDX}",    flush=True)
+print(f"[inference] Cat idx   : {CAT_IDX}",    flush=True)
+print(f"[inference] Rabbit idx: {RABBIT_IDX}", flush=True)
 
 SYMPTOM_COLS = [
-    "fever","lethargy","appetite_loss","sneezing",
-    "nasal_discharge","lameness","swallowing","vomiting",
-    "diarrhea","coughing","labored_breathing","skin_lesions",
-    "eye_discharge","dehydration","loss_of_appetite",
-    "reduced_appetite","swelling","swollen_joints",
-    "swollen_legs","weight_loss",
+    "fever", "lethargy", "appetite_loss", "sneezing",
+    "nasal_discharge", "lameness", "swallowing", "vomiting",
+    "diarrhea", "coughing", "labored_breathing", "skin_lesions",
+    "eye_discharge", "dehydration", "loss_of_appetite",
+    "reduced_appetite", "swelling", "swollen_joints",
+    "swollen_legs", "weight_loss",
 ]
 
-# disease index groups per pet  (LABELS keys are strings "0".."31")
-DOG_IDX    = [int(i) for i,n in LABELS.items() if "Dog"    in n]
-CAT_IDX    = [int(i) for i,n in LABELS.items() if "Cat"    in n or "Feline" in n]
-RABBIT_IDX = [int(i) for i,n in LABELS.items() if "Rabbit" in n]
-
-
+# ─────────────────────────────────────────────────────────────────
+#  Preprocessing
+# ─────────────────────────────────────────────────────────────────
 def preprocess_image(img_bytes: bytes) -> np.ndarray:
-    """Return (1, 224, 224, 3) float32 normalised image, or zeros if no image."""
     if not img_bytes:
+        print("[inference] No image → zero tensor", flush=True)
         return np.zeros((1, 224, 224, 3), dtype=np.float32)
     arr = np.frombuffer(img_bytes, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
+        print("[inference] Decode failed → zero tensor", flush=True)
         return np.zeros((1, 224, 224, 3), dtype=np.float32)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     img = cv2.resize(img, (224, 224))
     img = img.astype(np.float32) / 255.0
-    img = (img - 0.5) / 0.5          # MobileNetV2 normalisation
-    return img[np.newaxis, ...]       # (1, 224, 224, 3)
+    img = (img - 0.5) / 0.5
+    return img[np.newaxis, ...]
 
 
-def preprocess_tabular(pet_type, age, weight,
-                        body_temp, heart_rate,
-                        symptoms: dict) -> np.ndarray:
-    """Return (1, 27) float32 tabular feature vector."""
+def preprocess_tabular(pet_type, age, weight, body_temp, heart_rate, symptoms):
     pet = [
         1.0 if pet_type == "dog"    else 0.0,
         1.0 if pet_type == "cat"    else 0.0,
@@ -69,12 +110,13 @@ def preprocess_tabular(pet_type, age, weight,
     num_raw    = np.array([[age, weight, body_temp, heart_rate]], dtype=np.float32)
     num_scaled = ((num_raw - MEAN) / SCALE)[0].tolist()
     sym        = [float(symptoms.get(c, 0)) for c in SYMPTOM_COLS]
-    tab        = np.array(pet + num_scaled + sym, dtype=np.float32)[np.newaxis, ...]
-    return tab   # (1, 27)
+    vec        = pet + num_scaled + sym   # 3 + 4 + 20 = 27 features
+    tab        = np.array(vec, dtype=np.float32)[np.newaxis, ...]
+    print(f"[inference] Tabular features: {vec}", flush=True)
+    return tab
 
 
 def apply_gate(probs: np.ndarray, pet_type: str) -> np.ndarray:
-    """Zero out disease classes that don't belong to the selected pet type."""
     masked = probs.copy()
     if pet_type == "dog":
         for i in CAT_IDX + RABBIT_IDX:
@@ -91,56 +133,32 @@ def apply_gate(probs: np.ndarray, pet_type: str) -> np.ndarray:
     return masked
 
 
-def _find_input_index(shape_len: int) -> int:
-    """
-    Return the IN_DET index whose tensor has `shape_len` dimensions.
-    Image input has 4 dims (1,224,224,3); tabular has 2 dims (1,27).
-    Falls back to positional order if ambiguous.
-    """
-    for i, d in enumerate(IN_DET):
-        if len(d["shape"]) == shape_len:
-            return i
-    return 0   # fallback
-
-
+# ─────────────────────────────────────────────────────────────────
+#  Predict
+# ─────────────────────────────────────────────────────────────────
 def predict(img_bytes, pet_type, age, weight,
             body_temp, heart_rate, symptoms, top_k=3):
-    """
-    Run inference and return a list of top_k dicts:
-      [{"rank": 1, "disease": "...", "confidence": 58.2}, ...]
+    print(f"\n[inference] PREDICT  pet={pet_type} age={age} wt={weight} "
+          f"temp={body_temp} hr={heart_rate} sym={symptoms}", flush=True)
 
-    FIX: Inputs are assigned by tensor shape, NOT by tensor name.
-    The original code checked inp["name"] for "image"/"tabular" which
-    fails because TFLite renames tensors during conversion.
-    """
     img = preprocess_image(img_bytes)
-    tab = preprocess_tabular(pet_type, age, weight,
-                              body_temp, heart_rate, symptoms)
+    tab = preprocess_tabular(pet_type, age, weight, body_temp, heart_rate, symptoms)
 
-    # ── Assign inputs by shape (robust, name-independent) ────────
-    img_input_idx = _find_input_index(4)   # 4-dim = image (1,224,224,3)
-    tab_input_idx = _find_input_index(2)   # 2-dim = tabular (1,27)
-
-    # Safety: if both resolve to the same index (single-input model),
-    # fall back to positional: 0=image, 1=tabular
-    if img_input_idx == tab_input_idx:
-        img_input_idx = 0
-        tab_input_idx = 1 if len(IN_DET) > 1 else 0
-
-    INTERP.set_tensor(IN_DET[img_input_idx]["index"], img)
-    if len(IN_DET) > 1:
-        INTERP.set_tensor(IN_DET[tab_input_idx]["index"], tab)
+    # ── Set tensors by pre-resolved index (key fix) ───────────────
+    INTERP.set_tensor(_img_idx, img)
+    if _tab_idx is not None:
+        INTERP.set_tensor(_tab_idx, tab)
 
     INTERP.invoke()
 
-    probs   = INTERP.get_tensor(OUT_DET[0]["index"])[0].copy()
-    probs   = apply_gate(probs, pet_type)
+    raw = INTERP.get_tensor(OUT_DET[0]["index"])[0].copy()
+    print(f"[inference] Raw output (all 32): {raw.tolist()}", flush=True)
 
-    # Get top-k indices sorted by probability descending
-    k       = min(top_k, len(probs))
+    probs   = apply_gate(raw, pet_type)
+    k       = min(top_k, int((probs > 0).sum()), len(probs))
     top_idx = np.argsort(probs)[::-1][:k]
 
-    return [
+    results = [
         {
             "rank":       i + 1,
             "disease":    LABELS[str(idx)],
@@ -148,3 +166,5 @@ def predict(img_bytes, pet_type, age, weight,
         }
         for i, idx in enumerate(top_idx)
     ]
+    print(f"[inference] Top-{k} results: {results}", flush=True)
+    return results
